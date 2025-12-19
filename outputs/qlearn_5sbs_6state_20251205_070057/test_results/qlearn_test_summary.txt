@@ -1,0 +1,12 @@
+Test Results for QLEARN
+Timestamp: 20251210_100000
+Number of Iterations: 100
+==================================================
+
+METRICS (Mean ± 95% CI)
+--------------------------------------------------
+Energy: 732.38 ± 4.15 J
+Energy Reduction: 29.2%
+SINR: 9.32 ± 0.02 dB
+Efficiency: 111949 ± 635 bits/J
+Efficiency Improvement: 41.3%

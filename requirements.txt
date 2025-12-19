@@ -1,0 +1,5 @@
+tensorflow>=2.10.0
+numpy>=1.23.0
+matplotlib>=3.6.0
+gymnasium>=0.26.0
+pyzmq>=24.0.0

@@ -1,0 +1,12 @@
+Test Results for DDQN
+Timestamp: 20251210_100000
+Number of Iterations: 100
+==================================================
+
+METRICS (Mean ± 95% CI)
+--------------------------------------------------
+Energy: 686.35 ± 2.50 J
+Energy Reduction: 33.6%
+SINR: 8.47 ± 0.02 dB
+Efficiency: 119396 ± 430 bits/J
+Efficiency Improvement: 50.7%
