@@ -1,0 +1,22 @@
+DDQN Test Results
+Timestamp: 2026-01-01 14:56:47
+Iterations: 5
+==================================================
+
+METRICS (Mean ± 95% CI)
+--------------------------------------------------
+Energy: 850.69 ± 3.69 J
+Energy Std: 4.22 J
+Energy Range: [844.88, 857.21] J
+Energy Reduction: 17.7%
+
+SINR: 8.47 ± 0.00 dB
+Efficiency: 96300 ± 418 bits/J
+Efficiency Improvement: 21.5%
+
+==================================================
+BASELINE VALUES
+--------------------------------------------------
+Baseline Energy: 1034 J
+Baseline SINR: 10.77 dB
+Baseline Efficiency: 79229 bits/J

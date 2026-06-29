@@ -16,7 +16,8 @@ from datetime import datetime
 RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_NAME = f"ddqn_5sbs_6state_{RUN_TIMESTAMP}"
 
-OUTPUT_DIR = f"scratch/capstone/outputs/{RUN_NAME}"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "outputs", RUN_NAME)
 MODEL_DIR = os.path.join(OUTPUT_DIR, "models")
 PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 DATA_DIR = os.path.join(OUTPUT_DIR, "data")
