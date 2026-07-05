@@ -33,7 +33,7 @@ for d in [MODEL_DIR, PLOT_DIR, DATA_DIR, LOG_DIR]:
 BATCH_SIZE = 128
 TARGET_UPDATE_FREQ = 100 
 MEM_SIZE = 100000
-EPISODES = 150
+EPISODES = 180   # DDQN epsilon floors ~ep120; extra tail for a clean plateau
 MAX_STEPS = 1000
 
 N_AGENTS = 5
@@ -504,6 +504,17 @@ if __name__ == "__main__":
     np.save(f"{DATA_DIR}/avg_reward_per_episode.npy", np.array(avg_rewards_per_episode))
     np.save(f"{DATA_DIR}/sinr_per_episode.npy", np.array(avg_sbs_sinr_per_episode))
     np.save(f"{DATA_DIR}/energy_efficiency_per_episode.npy", np.array(ee_rl))
+
+    # === Unified training CSV (schema: research_config.TRAINING_CSV_COLUMNS) ===
+    with open(f"{DATA_DIR}/training_metrics.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["episode", "reward", "energy", "sinr", "efficiency"])
+        for i in range(len(avg_rewards_per_episode)):
+            w.writerow([i + 1,
+                        avg_rewards_per_episode[i],
+                        total_energy_per_episode[i],
+                        avg_sbs_sinr_per_episode[i],
+                        ee_rl[i]])
     
     # Final reward plot
     plt.figure(figsize=(10,6))
