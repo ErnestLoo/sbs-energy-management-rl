@@ -17,6 +17,7 @@ from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 from ns3gym import ns3env
 import os
+import csv
 from datetime import datetime
 from collections import deque
 
@@ -394,10 +395,10 @@ def train():
     episode_actor_losses = []
     episode_critic_losses = []
     
-    # Energy efficiency calculation
-    packets_per_ue = SIM_TIME / 0.05
+    # Energy efficiency calculation (canonical formula — matches DDQN & research_config)
+    packets_per_ue = SIM_TIME / PACKET_INTERVAL
     total_packets = packets_per_ue * NUM_UES
-    total_bits = total_packets * 1024 * 8
+    total_bits = total_packets * PACKET_SIZE_BYTES * 8
     
     for episode in range(1, EPISODES + 1):
         print(f"\n{'='*60}")
@@ -490,6 +491,17 @@ def train():
     np.save(f"{OUTPUT_DIR}/data/episode_efficiencies.npy", np.array(episode_efficiencies))
     np.save(f"{OUTPUT_DIR}/data/episode_actor_losses.npy", np.array(episode_actor_losses))
     np.save(f"{OUTPUT_DIR}/data/episode_critic_losses.npy", np.array(episode_critic_losses))
+
+    # === Unified training CSV (schema: research_config.TRAINING_CSV_COLUMNS) ===
+    with open(f"{OUTPUT_DIR}/data/training_metrics.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["episode", "reward", "energy", "sinr", "efficiency"])
+        for i in range(len(episode_rewards)):
+            w.writerow([i + 1,
+                        episode_rewards[i],
+                        episode_energies[i],
+                        episode_sinrs[i],
+                        episode_efficiencies[i]])
     
     # Generate individual training plots
     generate_plots(episode_rewards, episode_energies, episode_sinrs,
