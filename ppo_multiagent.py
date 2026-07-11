@@ -342,15 +342,15 @@ class MultiAgentPPO:
     def save(self, filepath):
         """Save all agent models"""
         for i, agent in enumerate(self.agents):
-            agent.actor.save_weights(f"{filepath}_actor_{i}.h5")
-            agent.critic.save_weights(f"{filepath}_critic_{i}.h5")
+            agent.actor.save_weights(f"{filepath}_actor_{i}.weights.h5")
+            agent.critic.save_weights(f"{filepath}_critic_{i}.weights.h5")
         print(f"Saved PPO models to {filepath}")
     
     def load(self, filepath):
         """Load all agent models"""
         for i, agent in enumerate(self.agents):
-            agent.actor.load_weights(f"{filepath}_actor_{i}.h5")
-            agent.critic.load_weights(f"{filepath}_critic_{i}.h5")
+            agent.actor.load_weights(f"{filepath}_actor_{i}.weights.h5")
+            agent.critic.load_weights(f"{filepath}_critic_{i}.weights.h5")
         print(f"Loaded PPO models from {filepath}")
 
 

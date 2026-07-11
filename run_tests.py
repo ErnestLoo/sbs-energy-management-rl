@@ -83,18 +83,18 @@ class PPOPolicy:
         for i in range(cfg.N_AGENTS):
             actor = Actor(cfg.STATE_DIM_PER_AGENT, cfg.ACTION_DIM, name=f"actor_{i}")
             actor(tf.zeros((1, cfg.STATE_DIM_PER_AGENT)))   # build
-            actor.load_weights(f"{base}_actor_{i}.h5")
+            actor.load_weights(f"{base}_actor_{i}.weights.h5")
             self.actors.append(actor)
 
     @staticmethod
     def _find_weight_base(models_dir):
         # prefer ppo_final, else the latest ppo_checkpoint_ep*
         final = os.path.join(models_dir, "ppo_final")
-        if os.path.exists(final + "_actor_0.h5"):
+        if os.path.exists(final + "_actor_0.weights.h5"):
             return final
-        ckpts = sorted(glob.glob(os.path.join(models_dir, "ppo_checkpoint_ep*_actor_0.h5")))
+        ckpts = sorted(glob.glob(os.path.join(models_dir, "ppo_checkpoint_ep*_actor_0.weights.h5")))
         if ckpts:
-            return ckpts[-1].replace("_actor_0.h5", "")
+            return ckpts[-1].replace("_actor_0.weights.h5", "")
         raise FileNotFoundError(f"No PPO actor weights found in {models_dir}")
 
     def act(self, obs, allowed):
