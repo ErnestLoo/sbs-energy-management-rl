@@ -91,8 +91,8 @@ def curriculum_actions(episode_num):
 # =============================================================================
 # TESTING PROTOCOL
 # =============================================================================
-N_TEST_ITERATIONS = 50
-TEST_SEEDS        = list(range(N_TEST_ITERATIONS))   # 0..49, shared by all
+N_TEST_ITERATIONS = 150
+TEST_SEEDS        = list(range(N_TEST_ITERATIONS))   # 0..149, shared by all
 
 # =============================================================================
 # SINR QUALITY THRESHOLDS (dB) — for dotted lines on SINR plots
