@@ -1,4 +1,9 @@
-```
+# Generated results and artifacts (not version-controlled)
+outputs/
+figures/
+
+# Editor / tooling
+.claude/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -12,3 +17,6 @@ venv/
 Thumbs.db
 *.log
 *.tmp
+
+# Notes
+how to run.txt
