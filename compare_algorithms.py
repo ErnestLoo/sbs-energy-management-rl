@@ -18,7 +18,7 @@ Outputs -> figures/compare_<timestamp>/
       2 fig_train_energy.png       (Total Energy; DDQN, PPO, Baseline)
       3 fig_train_sinr.png         (SINR + threshold lines)
       4 fig_train_efficiency.png   (bits/J)
-    Testing (bar + 95% CI, 5 series: DDQN-G1, PPO-G1, DDQN-G2, PPO-G2, Baseline):
+    Testing (line, per-iteration, 5 series: DDQN-G1, PPO-G1, DDQN-G2, PPO-G2, Baseline):
       5 fig_test_energy.png
       6 fig_test_sinr.png          (+ threshold lines)
       7 fig_test_efficiency.png
@@ -45,7 +45,7 @@ ALGO_STYLE = {
     "baseline": {"color": "tab:orange", "label": "Baseline"},
 }
 
-# test-phase series order and styling (5 bars)
+# test-phase series order and styling (5 lines)
 TEST_SERIES = [
     ("ddqn", "G1", "DDQN-G1", "tab:blue"),
     ("ppo",  "G1", "PPO-G1",  "tab:green"),
@@ -118,11 +118,6 @@ def smooth(a, w=10):
     return a, 0
 
 
-def ci95(a):
-    a = np.asarray(a)
-    return 1.96 * np.std(a) / np.sqrt(len(a)) if len(a) else 0.0
-
-
 def add_sinr_thresholds(ax):
     for val, color, lbl in cfg.SINR_THRESHOLDS:
         ax.axhline(val, color=color, linestyle=":", lw=1.3, label=lbl)
@@ -167,42 +162,36 @@ def plot_training_line(train, metric, ylabel, title, fname,
 
 
 # =============================================================================
-# TEST BAR PLOTS (mean + 95% CI, 5 series)
+# TEST LINE PLOTS (per-iteration, 5 series)
 # =============================================================================
-def plot_test_bar(test, metric, ylabel, title, fname,
-                  val_fmt="{:.0f}", sinr_thresholds=False):
-    labels, means, cis, colors = [], [], [], []
+def plot_test_line(test, metric, ylabel, title, fname, sinr_thresholds=False):
+    have_data = False
+    plt.figure(figsize=(11, 6))
+    ax = plt.gca()
+
     for algo, group, label, color in TEST_SERIES:
         d = test.get((algo, group))
         if not d or not d[metric]:
             continue
-        labels.append(label)
-        means.append(float(np.mean(d[metric])))
-        cis.append(ci95(d[metric]))
-        colors.append(color)
+        arr = np.asarray(d[metric])
+        it = np.arange(1, len(arr) + 1)
+        # baseline is deterministic per seed -> dashed for readability
+        ls = "--" if algo == "baseline" else "-"
+        ax.plot(it, arr, color=color, lw=1.6, linestyle=ls, label=label)
+        have_data = True
 
-    if not means:
+    if not have_data:
+        plt.close()
         print(f"  [SKIP] {fname}: no test data")
         return
 
-    plt.figure(figsize=(max(7, len(means) * 1.6), 6))
-    ax = plt.gca()
-    bars = ax.bar(labels, means, yerr=cis, color=colors,
-                  edgecolor="black", lw=1.1, capsize=5)
-
     if sinr_thresholds:
         add_sinr_thresholds(ax)
-        ax.legend(fontsize=8)
 
-    y_top = (max(m + c for m, c in zip(means, cis))) * 1.18
-    ax.set_ylim(0, y_top)
-    for bar, m, c in zip(bars, means, cis):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + c + y_top * 0.01,
-                val_fmt.format(m), ha="center", va="bottom",
-                fontweight="bold", fontsize=9)
-
+    ax.set_xlabel("Iteration", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=9, ncol=2)
     plt.tight_layout()
     plt.savefig(os.path.join(OUT_DIR, fname))
     plt.close()
@@ -250,15 +239,15 @@ def main():
                        include_baseline=True, baseline_arr=bl_eff)
 
     # ---- Testing (bar + 95% CI, 5 series) ----
-    plot_test_bar(test, "energy", "Total Energy (J)",
-                  "Test — Energy Consumption (mean ± 95% CI)",
-                  "fig_test_energy.png", val_fmt="{:.0f} J")
-    plot_test_bar(test, "sinr", "SINR (dB)",
-                  "Test — Signal Quality (mean ± 95% CI)",
-                  "fig_test_sinr.png", val_fmt="{:.2f}", sinr_thresholds=True)
-    plot_test_bar(test, "efficiency", "Energy Efficiency (bits/J)",
-                  "Test — Energy Efficiency (mean ± 95% CI)",
-                  "fig_test_efficiency.png", val_fmt="{:.0f}")
+    plot_test_line(test, "energy", "Total Energy (J)",
+                   "Test — Energy Consumption per Iteration",
+                   "fig_test_energy.png")
+    plot_test_line(test, "sinr", "SINR (dB)",
+                   "Test — Signal Quality per Iteration",
+                   "fig_test_sinr.png", sinr_thresholds=True)
+    plot_test_line(test, "efficiency", "Energy Efficiency (bits/J)",
+                   "Test — Energy Efficiency per Iteration",
+                   "fig_test_efficiency.png")
 
     print(f"\nDone. Figures in {OUT_DIR}/")
 
