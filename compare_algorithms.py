@@ -1,484 +1,255 @@
 #!/usr/bin/env python3
 """
-Algorithm Comparison Script for Capstone Report
-================================================
+Figure generator — DDQN vs PPO vs Baseline.
 
-This script compares DDQN and Q-Learning algorithms by:
-1. Loading training data from outputs/
-2. Loading test results from outputs/*/test_results/
-3. Generating 17 publication-ready figures
+Reads CSVs produced by the training scripts and the test harness, then emits the
+7 planned figures. Plotting is fully decoupled from data collection: re-run this
+any time without re-running training/testing.
 
-Figures Generated:
-- Fig 1-4: DDQN training (reward, energy, SINR, efficiency)
-- Fig 5-8: Q-Learning training (reward, energy, SINR, efficiency)
-- Fig 9-11: Algorithm comparison (energy, SINR, efficiency)
-- Fig 12-17: Testing phase (box plots, histograms, summary)
+Inputs (auto-detected latest):
+    outputs/ddqn_5sbs_*/data/training_metrics.csv
+    outputs/ppo_curr_5sbs_*/data/training_metrics.csv
+    outputs/ddqn_5sbs_*/data/baseline_*_per_episode.npy   (per-episode baseline)
+    outputs/test_*/testing_metrics.csv                    (test harness)
 
-Usage:
-    python compare_algorithms.py
-
-Output:
-    - Training figures -> outputs/*/plots/
-    - Comparison figures -> figures/
+Outputs -> figures/compare_<timestamp>/
+    Training (line, x=Episode):
+      1 fig_train_reward.png       (Average Rewards; DDQN, PPO)
+      2 fig_train_energy.png       (Total Energy; DDQN, PPO, Baseline)
+      3 fig_train_sinr.png         (SINR + threshold lines)
+      4 fig_train_efficiency.png   (bits/J)
+    Testing (line, per-iteration, 5 series: DDQN-G1, PPO-G1, DDQN-G2, PPO-G2, Baseline):
+      5 fig_test_energy.png
+      6 fig_test_sinr.png          (+ threshold lines)
+      7 fig_test_efficiency.png
 """
 
 import os
+import csv
 import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-BASELINE_ENERGY = 1034.0
-BASELINE_SINR = 10.77
-BASELINE_EFFICIENCY = 79229.0
+import research_config as cfg
 
-# Figure settings
-plt.rcParams['figure.figsize'] = (8, 5)
-plt.rcParams['figure.dpi'] = 150
-plt.rcParams['font.size'] = 10
-plt.rcParams['axes.titlesize'] = 12
-plt.rcParams['axes.labelsize'] = 10
-plt.rcParams['legend.fontsize'] = 9
+plt.rcParams["figure.dpi"]     = 300
+plt.rcParams["savefig.dpi"]    = 300
+plt.rcParams["axes.grid"]      = True
+plt.rcParams["grid.alpha"]     = 0.3
+plt.rcParams["axes.axisbelow"] = True
 
+ALGO_STYLE = {
+    "ddqn":     {"color": "tab:blue",   "label": "DDQN"},
+    "ppo":      {"color": "tab:green",  "label": "PPO"},
+    "baseline": {"color": "tab:orange", "label": "Baseline"},
+}
 
-# =============================================================================
-# FIND OUTPUT FOLDERS
-# =============================================================================
-def find_output_folders():
-    """Find DDQN and Q-Learning output folders"""
-    ddqn_folders = sorted(glob.glob("outputs/ddqn_5sbs_*"))
-    qlearn_folders = sorted(glob.glob("outputs/qlearn_5sbs_*"))
-    
-    ddqn_folder = ddqn_folders[-1] if ddqn_folders else None
-    qlearn_folder = qlearn_folders[-1] if qlearn_folders else None
-    
-    return ddqn_folder, qlearn_folder
+# test-phase series order and styling (5 lines)
+TEST_SERIES = [
+    ("ddqn", "G1", "DDQN-G1", "tab:blue"),
+    ("ppo",  "G1", "PPO-G1",  "tab:green"),
+    ("ddqn", "G2", "DDQN-G2", "steelblue"),
+    ("ppo",  "G2", "PPO-G2",  "limegreen"),
+    ("baseline", "-", "Baseline", "tab:orange"),
+]
+
+OUT_DIR = os.path.join(cfg.FIGURES_DIR,
+                       "compare_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+os.makedirs(OUT_DIR, exist_ok=True)
 
 
 # =============================================================================
-# LOAD DATA
+# LOADING
 # =============================================================================
-def load_training_data(folder, algorithm):
-    """Load training data from output folder"""
-    data_dir = os.path.join(folder, "data")
-    
-    data = {'rewards': None, 'energy': None, 'sinr': None, 'efficiency': None}
-    
-    if algorithm == 'ddqn':
-        if os.path.exists(os.path.join(data_dir, "avg_reward_per_episode.npy")):
-            data['rewards'] = np.load(os.path.join(data_dir, "avg_reward_per_episode.npy"))
-            data['energy'] = np.load(os.path.join(data_dir, "rl_energy_per_episode.npy"))
-            data['sinr'] = np.load(os.path.join(data_dir, "sinr_per_episode.npy"))
-            data['efficiency'] = np.load(os.path.join(data_dir, "energy_efficiency_per_episode.npy"))
-    
-    elif algorithm == 'qlearn':
-        if os.path.exists(os.path.join(data_dir, "episode_rewards.npy")):
-            data['rewards'] = np.load(os.path.join(data_dir, "episode_rewards.npy"))
-            data['energy'] = np.load(os.path.join(data_dir, "episode_energies.npy"))
-            data['sinr'] = np.load(os.path.join(data_dir, "episode_sinrs.npy"))
-            data['efficiency'] = np.load(os.path.join(data_dir, "episode_efficiencies.npy"))
-    
-    return data
+def _latest(pattern):
+    hits = sorted(glob.glob(os.path.join(cfg.OUTPUTS_DIR, pattern)))
+    return hits[-1] if hits else None
 
 
-def load_test_data(folder, algorithm):
-    """Load test results data"""
-    test_dir = os.path.join(folder, "test_results")
+def load_training_csv(folder):
+    """Return dict of np arrays for reward/energy/sinr/efficiency, or None."""
+    if not folder:
+        return None
+    path = os.path.join(folder, "data", "training_metrics.csv")
+    if not os.path.exists(path):
+        print(f"  [WARN] no training_metrics.csv in {folder}")
+        return None
+    cols = {c: [] for c in cfg.TRAINING_CSV_COLUMNS}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            for c in cfg.TRAINING_CSV_COLUMNS:
+                cols[c].append(float(row[c]))
+    return {c: np.array(v) for c, v in cols.items()}
+
+
+def load_npy(folder, name):
+    if not folder:
+        return None
+    p = os.path.join(folder, "data", name)
+    return np.load(p) if os.path.exists(p) else None
+
+
+def load_testing_csv(folder):
+    """Return {(algo, group): {'energy':[], 'sinr':[], 'efficiency':[]}}."""
+    if not folder:
+        return {}
+    path = os.path.join(folder, "testing_metrics.csv")
+    if not os.path.exists(path):
+        print(f"  [WARN] no testing_metrics.csv in {folder}")
+        return {}
     data = {}
-    for metric in ['energies', 'sinrs', 'efficiencies', 'rewards']:
-        filepath = os.path.join(test_dir, f"{algorithm}_test_{metric}.npy")
-        if os.path.exists(filepath):
-            data[metric] = np.load(filepath)
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            key = (row["algorithm"], row["sleep_group"])
+            d = data.setdefault(key, {"energy": [], "sinr": [], "efficiency": []})
+            d["energy"].append(float(row["energy"]))
+            d["sinr"].append(float(row["sinr"]))
+            d["efficiency"].append(float(row["efficiency"]))
     return data
 
 
 # =============================================================================
-# TRAINING FIGURES (Fig 1-8)
+# HELPERS
 # =============================================================================
-def plot_training_reward(data, algorithm, output_path, fig_num):
-    """Plot reward curve during training"""
-    plt.figure(figsize=(8, 5))
-    episodes = np.arange(1, len(data) + 1)
-    
-    color = '#3498db' if algorithm == 'ddqn' else '#2ecc71'
-    label = 'DDQN' if algorithm == 'ddqn' else 'Q-Learning'
-    
-    plt.plot(episodes, data, color=color, alpha=0.3, linewidth=0.5)
-    
-    window = 10
-    ma = np.convolve(data, np.ones(window)/window, mode='valid')
-    ma_episodes = np.arange(window, len(data) + 1)
-    plt.plot(ma_episodes, ma, color=color, linewidth=2, label=f'{label} (MA-{window})')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Average Reward')
-    plt.title(f'{label} Training: Reward Progression')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
+def smooth(a, w=10):
+    if len(a) >= w:
+        return np.convolve(a, np.ones(w) / w, mode="valid"), w - 1
+    return a, 0
 
 
-def plot_training_energy(data, algorithm, output_path, fig_num):
-    """Plot energy consumption during training"""
-    plt.figure(figsize=(8, 5))
-    episodes = np.arange(1, len(data) + 1)
-    
-    color = '#3498db' if algorithm == 'ddqn' else '#2ecc71'
-    label = 'DDQN' if algorithm == 'ddqn' else 'Q-Learning'
-    
-    plt.plot(episodes, data, color=color, alpha=0.5, linewidth=1)
-    plt.axhline(y=BASELINE_ENERGY, color='red', linestyle='--', linewidth=2, label='Baseline')
-    
-    window = 10
-    ma = np.convolve(data, np.ones(window)/window, mode='valid')
-    ma_episodes = np.arange(window, len(data) + 1)
-    plt.plot(ma_episodes, ma, color=color, linewidth=2, label=f'{label} (MA-{window})')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Energy Consumption (J)')
-    plt.title(f'{label} Training: Energy Consumption')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
-
-
-def plot_training_sinr(data, algorithm, output_path, fig_num):
-    """Plot SINR during training"""
-    plt.figure(figsize=(8, 5))
-    episodes = np.arange(1, len(data) + 1)
-    
-    color = '#3498db' if algorithm == 'ddqn' else '#2ecc71'
-    label = 'DDQN' if algorithm == 'ddqn' else 'Q-Learning'
-    
-    plt.plot(episodes, data, color=color, alpha=0.5, linewidth=1)
-    plt.axhline(y=BASELINE_SINR, color='red', linestyle='--', linewidth=2, label='Baseline')
-    
-    window = 10
-    ma = np.convolve(data, np.ones(window)/window, mode='valid')
-    ma_episodes = np.arange(window, len(data) + 1)
-    plt.plot(ma_episodes, ma, color=color, linewidth=2, label=f'{label} (MA-{window})')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('SINR (dB)')
-    plt.title(f'{label} Training: Signal Quality (SINR)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
-
-
-def plot_training_efficiency(data, algorithm, output_path, fig_num):
-    """Plot energy efficiency during training"""
-    plt.figure(figsize=(8, 5))
-    episodes = np.arange(1, len(data) + 1)
-    
-    color = '#3498db' if algorithm == 'ddqn' else '#2ecc71'
-    label = 'DDQN' if algorithm == 'ddqn' else 'Q-Learning'
-    
-    plt.plot(episodes, data, color=color, alpha=0.5, linewidth=1)
-    plt.axhline(y=BASELINE_EFFICIENCY, color='red', linestyle='--', linewidth=2, label='Baseline')
-    
-    window = 10
-    ma = np.convolve(data, np.ones(window)/window, mode='valid')
-    ma_episodes = np.arange(window, len(data) + 1)
-    plt.plot(ma_episodes, ma, color=color, linewidth=2, label=f'{label} (MA-{window})')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Energy Efficiency (bits/J)')
-    plt.title(f'{label} Training: Energy Efficiency')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
+def add_sinr_thresholds(ax):
+    for val, color, lbl in cfg.SINR_THRESHOLDS:
+        ax.axhline(val, color=color, linestyle=":", lw=1.3, label=lbl)
 
 
 # =============================================================================
-# COMPARISON FIGURES (Fig 9-11)
+# TRAINING LINE PLOTS
 # =============================================================================
-def plot_comparison(ddqn_data, qlearn_data, ylabel, title, output_path, fig_num, baseline=None):
-    """Plot comparison between algorithms"""
-    plt.figure(figsize=(8, 5))
-    
-    window = 10
-    ddqn_ma = np.convolve(ddqn_data, np.ones(window)/window, mode='valid')
-    qlearn_ma = np.convolve(qlearn_data, np.ones(window)/window, mode='valid')
-    ma_episodes = np.arange(window, len(ddqn_data) + 1)
-    
-    plt.plot(ma_episodes, ddqn_ma, '#3498db', linewidth=2, label='DDQN')
-    plt.plot(ma_episodes, qlearn_ma, '#2ecc71', linewidth=2, label='Q-Learning')
-    
-    if baseline:
-        plt.axhline(y=baseline, color='red', linestyle='--', linewidth=2, label='Baseline')
-    
-    plt.xlabel('Episode')
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+def plot_training_line(train, metric, ylabel, title, fname,
+                       include_baseline=False, baseline_arr=None,
+                       sinr_thresholds=False):
+    plt.figure(figsize=(11, 6))
+    ax = plt.gca()
+
+    for algo in ("ddqn", "ppo"):
+        d = train.get(algo)
+        if d is None or metric not in d:
+            continue
+        arr = d[metric]
+        ep = np.arange(1, len(arr) + 1)
+        sty = ALGO_STYLE[algo]
+        ax.plot(ep, arr, color=sty["color"], alpha=0.2)
+        sm, off = smooth(arr)
+        ax.plot(ep[off:], sm, color=sty["color"], lw=2, label=sty["label"])
+
+    if include_baseline and baseline_arr is not None and len(baseline_arr):
+        ep = np.arange(1, len(baseline_arr) + 1)
+        ax.plot(ep, baseline_arr, color=ALGO_STYLE["baseline"]["color"],
+                lw=1.8, ls="--", label="Baseline (Always Active)")
+
+    if sinr_thresholds:
+        add_sinr_thresholds(ax)
+
+    ax.set_xlabel("Episode", fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=9)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(OUT_DIR, fname))
     plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
+    print(f"  saved {fname}")
 
 
 # =============================================================================
-# TEST FIGURES (Fig 12-17)
+# TEST LINE PLOTS (per-iteration, 5 series)
 # =============================================================================
-def plot_test_boxplot(ddqn_data, qlearn_data, ylabel, title, output_path, fig_num, baseline=None):
-    """Create box plot comparing test results"""
-    plt.figure(figsize=(8, 5))
-    
-    bp = plt.boxplot([ddqn_data, qlearn_data], labels=['DDQN', 'Q-Learning'], patch_artist=True)
-    
-    colors = ['#3498db', '#2ecc71']
-    for patch, color in zip(bp['boxes'], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-    
-    means = [np.mean(ddqn_data), np.mean(qlearn_data)]
-    plt.scatter([1, 2], means, color='black', marker='D', s=50, zorder=3, label='Mean')
-    
-    if baseline:
-        plt.axhline(y=baseline, color='red', linestyle='--', linewidth=2, label='Baseline')
-    
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3, axis='y')
+def plot_test_line(test, metric, ylabel, title, fname, sinr_thresholds=False):
+    have_data = False
+    plt.figure(figsize=(11, 6))
+    ax = plt.gca()
+
+    for algo, group, label, color in TEST_SERIES:
+        d = test.get((algo, group))
+        if not d or not d[metric]:
+            continue
+        arr = np.asarray(d[metric])
+        it = np.arange(1, len(arr) + 1)
+        # baseline is deterministic per seed -> dashed for readability
+        ls = "--" if algo == "baseline" else "-"
+        ax.plot(it, arr, color=color, lw=1.6, linestyle=ls, label=label)
+        have_data = True
+
+    if not have_data:
+        plt.close()
+        print(f"  [SKIP] {fname}: no test data")
+        return
+
+    if sinr_thresholds:
+        add_sinr_thresholds(ax)
+
+    ax.set_xlabel("Iteration", fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=9, ncol=2)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(OUT_DIR, fname))
     plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
-
-
-def plot_test_histogram(ddqn_data, qlearn_data, xlabel, title, output_path, fig_num):
-    """Create histogram comparing test distributions"""
-    plt.figure(figsize=(8, 5))
-    
-    plt.hist(ddqn_data, bins=20, alpha=0.6, color='#3498db', label='DDQN', edgecolor='black')
-    plt.hist(qlearn_data, bins=20, alpha=0.6, color='#2ecc71', label='Q-Learning', edgecolor='black')
-    
-    plt.axvline(x=np.mean(ddqn_data), color='#2980b9', linestyle='--', linewidth=2)
-    plt.axvline(x=np.mean(qlearn_data), color='#27ae60', linestyle='--', linewidth=2)
-    
-    plt.xlabel(xlabel)
-    plt.ylabel('Frequency')
-    plt.title(title)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
-
-
-def plot_test_trends(ddqn_test, qlearn_test, output_path, fig_num):
-    """Plot metrics across test iterations"""
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    
-    iterations = np.arange(1, len(ddqn_test['energies']) + 1)
-    
-    axes[0].plot(iterations, ddqn_test['energies'], '#3498db', alpha=0.7, label='DDQN')
-    axes[0].plot(iterations, qlearn_test['energies'], '#2ecc71', alpha=0.7, label='Q-Learning')
-    axes[0].axhline(y=BASELINE_ENERGY, color='red', linestyle='--', label='Baseline')
-    axes[0].set_xlabel('Iteration')
-    axes[0].set_ylabel('Energy (J)')
-    axes[0].set_title('Energy Consumption')
-    axes[0].legend(fontsize=8)
-    axes[0].grid(True, alpha=0.3)
-    
-    axes[1].plot(iterations, ddqn_test['sinrs'], '#3498db', alpha=0.7, label='DDQN')
-    axes[1].plot(iterations, qlearn_test['sinrs'], '#2ecc71', alpha=0.7, label='Q-Learning')
-    axes[1].axhline(y=BASELINE_SINR, color='red', linestyle='--', label='Baseline')
-    axes[1].set_xlabel('Iteration')
-    axes[1].set_ylabel('SINR (dB)')
-    axes[1].set_title('Signal Quality')
-    axes[1].legend(fontsize=8)
-    axes[1].grid(True, alpha=0.3)
-    
-    axes[2].plot(iterations, ddqn_test['efficiencies'], '#3498db', alpha=0.7, label='DDQN')
-    axes[2].plot(iterations, qlearn_test['efficiencies'], '#2ecc71', alpha=0.7, label='Q-Learning')
-    axes[2].axhline(y=BASELINE_EFFICIENCY, color='red', linestyle='--', label='Baseline')
-    axes[2].set_xlabel('Iteration')
-    axes[2].set_ylabel('Efficiency (bits/J)')
-    axes[2].set_title('Energy Efficiency')
-    axes[2].legend(fontsize=8)
-    axes[2].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
-
-
-def plot_test_summary(ddqn_test, qlearn_test, output_path, fig_num):
-    """Create summary bar chart with error bars"""
-    fig, axes = plt.subplots(1, 3, figsize=(12, 5))
-    
-    x = np.arange(2)
-    width = 0.6
-    
-    # Energy Reduction
-    ddqn_red = (BASELINE_ENERGY - np.mean(ddqn_test['energies'])) / BASELINE_ENERGY * 100
-    qlearn_red = (BASELINE_ENERGY - np.mean(qlearn_test['energies'])) / BASELINE_ENERGY * 100
-    ddqn_ci = 1.96 * np.std(ddqn_test['energies']) / np.sqrt(len(ddqn_test['energies'])) / BASELINE_ENERGY * 100
-    qlearn_ci = 1.96 * np.std(qlearn_test['energies']) / np.sqrt(len(qlearn_test['energies'])) / BASELINE_ENERGY * 100
-    
-    bars1 = axes[0].bar(x, [ddqn_red, qlearn_red], width, yerr=[ddqn_ci, qlearn_ci],
-                        color=['#3498db', '#2ecc71'], capsize=5, alpha=0.8)
-    axes[0].set_ylabel('Energy Reduction (%)')
-    axes[0].set_title('Energy Savings')
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(['DDQN', 'Q-Learning'])
-    axes[0].grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars1, [ddqn_red, qlearn_red]):
-        axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%',
-                     ha='center', va='bottom', fontsize=10, fontweight='bold')
-    
-    # SINR
-    ddqn_sinr = np.mean(ddqn_test['sinrs'])
-    qlearn_sinr = np.mean(qlearn_test['sinrs'])
-    ddqn_sinr_ci = 1.96 * np.std(ddqn_test['sinrs']) / np.sqrt(len(ddqn_test['sinrs']))
-    qlearn_sinr_ci = 1.96 * np.std(qlearn_test['sinrs']) / np.sqrt(len(qlearn_test['sinrs']))
-    
-    bars2 = axes[1].bar(x, [ddqn_sinr, qlearn_sinr], width, yerr=[ddqn_sinr_ci, qlearn_sinr_ci],
-                        color=['#3498db', '#2ecc71'], capsize=5, alpha=0.8)
-    axes[1].axhline(y=BASELINE_SINR, color='red', linestyle='--', label='Baseline')
-    axes[1].set_ylabel('SINR (dB)')
-    axes[1].set_title('Signal Quality')
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(['DDQN', 'Q-Learning'])
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars2, [ddqn_sinr, qlearn_sinr]):
-        axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, f'{val:.2f}',
-                     ha='center', va='bottom', fontsize=10, fontweight='bold')
-    
-    # Efficiency Improvement
-    ddqn_imp = (np.mean(ddqn_test['efficiencies']) - BASELINE_EFFICIENCY) / BASELINE_EFFICIENCY * 100
-    qlearn_imp = (np.mean(qlearn_test['efficiencies']) - BASELINE_EFFICIENCY) / BASELINE_EFFICIENCY * 100
-    ddqn_imp_ci = 1.96 * np.std(ddqn_test['efficiencies']) / np.sqrt(len(ddqn_test['efficiencies'])) / BASELINE_EFFICIENCY * 100
-    qlearn_imp_ci = 1.96 * np.std(qlearn_test['efficiencies']) / np.sqrt(len(qlearn_test['efficiencies'])) / BASELINE_EFFICIENCY * 100
-    
-    bars3 = axes[2].bar(x, [ddqn_imp, qlearn_imp], width, yerr=[ddqn_imp_ci, qlearn_imp_ci],
-                        color=['#3498db', '#2ecc71'], capsize=5, alpha=0.8)
-    axes[2].set_ylabel('Efficiency Improvement (%)')
-    axes[2].set_title('Energy Efficiency')
-    axes[2].set_xticks(x)
-    axes[2].set_xticklabels(['DDQN', 'Q-Learning'])
-    axes[2].grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars3, [ddqn_imp, qlearn_imp]):
-        axes[2].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}%',
-                     ha='center', va='bottom', fontsize=10, fontweight='bold')
-    
-    plt.suptitle('Testing Phase: Algorithm Performance Summary (100 Iterations)', fontsize=12, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Fig {fig_num}: {os.path.basename(output_path)}")
+    print(f"  saved {fname}")
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
 def main():
-    print("=" * 70)
-    print("  ALGORITHM COMPARISON - FIGURE GENERATION")
-    print("=" * 70)
-    print(f"  Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Find output folders
-    ddqn_folder, qlearn_folder = find_output_folders()
-    
-    if not ddqn_folder or not qlearn_folder:
-        print("\nERROR: Could not find output folders")
-        return
-    
-    print(f"\n  DDQN folder: {ddqn_folder}")
-    print(f"  Q-Learning folder: {qlearn_folder}")
-    
-    os.makedirs("figures", exist_ok=True)
-    
-    # Load training data
-    print("\nLoading training data...")
-    ddqn_train = load_training_data(ddqn_folder, 'ddqn')
-    qlearn_train = load_training_data(qlearn_folder, 'qlearn')
-    
-    if ddqn_train['rewards'] is None or qlearn_train['rewards'] is None:
-        print("ERROR: Could not load training data")
-        return
-    
-    print(f"  DDQN: {len(ddqn_train['rewards'])} episodes")
-    print(f"  Q-Learning: {len(qlearn_train['rewards'])} episodes")
-    
-    # DDQN training figures -> outputs/ddqn_*/plots/
-    ddqn_plots = os.path.join(ddqn_folder, "plots")
-    os.makedirs(ddqn_plots, exist_ok=True)
-    
-    print(f"\n--- DDQN Training Figures -> {ddqn_plots}/ ---")
-    plot_training_reward(ddqn_train['rewards'], 'ddqn', os.path.join(ddqn_plots, "fig1_ddqn_reward.png"), 1)
-    plot_training_energy(ddqn_train['energy'], 'ddqn', os.path.join(ddqn_plots, "fig3_ddqn_energy.png"), 3)
-    plot_training_sinr(ddqn_train['sinr'], 'ddqn', os.path.join(ddqn_plots, "fig5_ddqn_sinr.png"), 5)
-    plot_training_efficiency(ddqn_train['efficiency'], 'ddqn', os.path.join(ddqn_plots, "fig7_ddqn_efficiency.png"), 7)
-    
-    # Q-Learning training figures -> outputs/qlearn_*/plots/
-    qlearn_plots = os.path.join(qlearn_folder, "plots")
-    os.makedirs(qlearn_plots, exist_ok=True)
-    
-    print(f"\n--- Q-Learning Training Figures -> {qlearn_plots}/ ---")
-    plot_training_reward(qlearn_train['rewards'], 'qlearn', os.path.join(qlearn_plots, "fig2_qlearn_reward.png"), 2)
-    plot_training_energy(qlearn_train['energy'], 'qlearn', os.path.join(qlearn_plots, "fig4_qlearn_energy.png"), 4)
-    plot_training_sinr(qlearn_train['sinr'], 'qlearn', os.path.join(qlearn_plots, "fig6_qlearn_sinr.png"), 6)
-    plot_training_efficiency(qlearn_train['efficiency'], 'qlearn', os.path.join(qlearn_plots, "fig8_qlearn_efficiency.png"), 8)
-    
-    # Comparison figures -> figures/
-    print(f"\n--- Comparison Figures -> figures/ ---")
-    plot_comparison(ddqn_train['energy'], qlearn_train['energy'], 'Energy (J)',
-                   'Algorithm Comparison: Energy Consumption', "figures/report_fig9_comparison_energy.png", 9, BASELINE_ENERGY)
-    plot_comparison(ddqn_train['sinr'], qlearn_train['sinr'], 'SINR (dB)',
-                   'Algorithm Comparison: Signal Quality', "figures/report_fig10_comparison_sinr.png", 10, BASELINE_SINR)
-    plot_comparison(ddqn_train['efficiency'], qlearn_train['efficiency'], 'Efficiency (bits/J)',
-                   'Algorithm Comparison: Energy Efficiency', "figures/report_fig11_comparison_efficiency.png", 11, BASELINE_EFFICIENCY)
-    
-    # Test figures
-    print(f"\n--- Loading Test Data ---")
-    ddqn_test = load_test_data(ddqn_folder, 'ddqn')
-    qlearn_test = load_test_data(qlearn_folder, 'qlearn')
-    
-    if ddqn_test and qlearn_test and 'energies' in ddqn_test:
-        print(f"  DDQN: {len(ddqn_test['energies'])} iterations")
-        print(f"  Q-Learning: {len(qlearn_test['energies'])} iterations")
-        
-        print(f"\n--- Test Figures -> figures/ ---")
-        plot_test_boxplot(ddqn_test['energies'], qlearn_test['energies'], 'Energy (J)',
-                         'Testing: Energy Distribution', "figures/report_fig12_test_energy_boxplot.png", 12, BASELINE_ENERGY)
-        plot_test_boxplot(ddqn_test['sinrs'], qlearn_test['sinrs'], 'SINR (dB)',
-                         'Testing: SINR Distribution', "figures/report_fig13_test_sinr_boxplot.png", 13, BASELINE_SINR)
-        plot_test_boxplot(ddqn_test['efficiencies'], qlearn_test['efficiencies'], 'Efficiency (bits/J)',
-                         'Testing: Efficiency Distribution', "figures/report_fig14_test_efficiency_boxplot.png", 14, BASELINE_EFFICIENCY)
-        plot_test_histogram(ddqn_test['energies'], qlearn_test['energies'], 'Energy (J)',
-                           'Testing: Energy Histogram', "figures/report_fig15_test_energy_histogram.png", 15)
-        plot_test_trends(ddqn_test, qlearn_test, "figures/report_fig16_test_iteration_trends.png", 16)
-        plot_test_summary(ddqn_test, qlearn_test, "figures/report_fig17_test_summary_bars.png", 17)
-    else:
-        print("  Warning: Test data not found. Run ddqn_test.py and qlearn_test.py first.")
-    
-    print("\n" + "=" * 70)
-    print("  FIGURE GENERATION COMPLETE")
-    print("=" * 70)
+    ddqn_folder = _latest("ddqn_5sbs_*")
+    ppo_folder  = _latest("ppo_curr_5sbs_*") or _latest("ppo_5sbs_*")
+    test_folder = _latest("test_*")
+
+    print("Loading data...")
+    print(f"  DDQN train : {ddqn_folder}")
+    print(f"  PPO  train : {ppo_folder}")
+    print(f"  Test       : {test_folder}")
+
+    train = {
+        "ddqn": load_training_csv(ddqn_folder),
+        "ppo":  load_training_csv(ppo_folder),
+    }
+    # per-episode baseline (saved by training scripts) — prefer DDQN's
+    bl_energy = load_npy(ddqn_folder, "baseline_energy_per_episode.npy")
+    bl_sinr   = load_npy(ddqn_folder, "baseline_sinr_per_episode.npy")
+    bl_eff    = load_npy(ddqn_folder, "energy_efficiency_baseline.npy")
+
+    test = load_testing_csv(test_folder)
+
+    print(f"\nGenerating figures -> {OUT_DIR}/")
+
+    # ---- Training (line, x = Episode) ----
+    plot_training_line(train, "reward", "Average Rewards",
+                       "Training — Learning Progress", "fig_train_reward.png")
+    plot_training_line(train, "energy", "Total Energy (J)",
+                       "Training — Energy Consumption", "fig_train_energy.png",
+                       include_baseline=True, baseline_arr=bl_energy)
+    plot_training_line(train, "sinr", "SINR (dB)",
+                       "Training — Signal Quality", "fig_train_sinr.png",
+                       include_baseline=True, baseline_arr=bl_sinr,
+                       sinr_thresholds=True)
+    plot_training_line(train, "efficiency", "Energy Efficiency (bits/J)",
+                       "Training — Energy Efficiency", "fig_train_efficiency.png",
+                       include_baseline=True, baseline_arr=bl_eff)
+
+    # ---- Testing (bar + 95% CI, 5 series) ----
+    plot_test_line(test, "energy", "Total Energy (J)",
+                   "Test — Energy Consumption per Iteration",
+                   "fig_test_energy.png")
+    plot_test_line(test, "sinr", "SINR (dB)",
+                   "Test — Signal Quality per Iteration",
+                   "fig_test_sinr.png", sinr_thresholds=True)
+    plot_test_line(test, "efficiency", "Energy Efficiency (bits/J)",
+                   "Test — Energy Efficiency per Iteration",
+                   "fig_test_efficiency.png")
+
+    print(f"\nDone. Figures in {OUT_DIR}/")
 
 
 if __name__ == "__main__":
