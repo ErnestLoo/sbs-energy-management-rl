@@ -1,0 +1,3 @@
+# Normalize line endings: store everything as LF in the repo.
+# Stops phantom "modified" flags when editing on Windows (CRLF).
+* text=auto eol=lf
